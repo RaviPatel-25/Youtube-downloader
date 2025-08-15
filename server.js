@@ -1,46 +1,73 @@
 import express from "express";
 import cors from "cors";
-import { exec } from "child_process";
-import path from "path";
-import fs from "fs";
+import ytdl from "ytdl-core";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
+// Enable CORS for all origins
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-app.get("/download", (req, res) => {
-    const videoURL = req.query.url;
-    const quality = req.query.quality || "360p";
-
-    if (!videoURL) return res.status(400).send("No video URL provided");
-
-    const output = path.join("downloads", `video.mp4`);
-    if (!fs.existsSync("downloads")) fs.mkdirSync("downloads");
-
-    // Map quality label to yt-dlp format codes
-    const qualityMap = {
-        "144p": "best[height<=144]",
-        "240p": "best[height<=240]",
-        "360p": "best[height<=360]",
-        "480p": "best[height<=480]",
-        "720p": "best[height<=720]",
-        "1080p": "best[height<=1080]"
-    };
-    const format = qualityMap[quality] || qualityMap["360p"];
-
-    exec(`yt-dlp -f "${format}" -o "${output}" "${videoURL}"`, (error) => {
-        if (error) {
-            console.error(error);
-            return res.status(500).send("Download failed");
+// Get video info
+app.post("/get_info", async (req, res) => {
+    const { url } = req.body;
+    try {
+        if (!ytdl.validateURL(url)) {
+            return res.status(400).json({ error: "Invalid YouTube URL" });
         }
-        res.download(output, "video.mp4", () => {
-            fs.unlinkSync(output);
+        const info = await ytdl.getInfo(url);
+        const formats = ytdl
+            .filterFormats(info.formats, "videoandaudio")
+            .map(f => f.qualityLabel)
+            .filter((v, i, a) => v && a.indexOf(v) === i); // unique qualities
+
+        res.json({
+            title: info.videoDetails.title,
+            thumbnail: info.videoDetails.thumbnails.pop().url,
+            streams: formats
         });
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+// Download MP3
+app.post("/download/mp3", async (req, res) => {
+    const { url } = req.body;
+    try {
+        if (!ytdl.validateURL(url)) {
+            return res.status(400).json({ error: "Invalid YouTube URL" });
+        }
+        res.setHeader("Content-Disposition", 'attachment; filename="audio.mp3"');
+        res.setHeader("Content-Type", "audio/mpeg");
+        ytdl(url, { filter: "audioonly" }).pipe(res);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
+
+// Download MP4 (default quality 360p)
+app.post("/download/mp4", async (req, res) => {
+    const { url, quality } = req.body;
+    const selectedQuality = quality || "360p";
+    try {
+        if (!ytdl.validateURL(url)) {
+            return res.status(400).json({ error: "Invalid YouTube URL" });
+        }
+        res.setHeader("Content-Disposition", 'attachment; filename="video.mp4"');
+        res.setHeader("Content-Type", "video/mp4");
+
+        // Find matching quality or fallback to highest
+        const info = await ytdl.getInfo(url);
+        const format = info.formats.find(f => f.qualityLabel === selectedQuality && f.hasVideo && f.hasAudio)
+            || ytdl.chooseFormat(info.formats, { quality: "highestvideo", filter: "videoandaudio" });
+
+        ytdl.downloadFromInfo(info, { format }).pipe(res);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`API running on port ${PORT}`));
