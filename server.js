@@ -1,45 +1,46 @@
 import express from "express";
 import cors from "cors";
-import ytdl from "ytdl-core";
+import { exec } from "child_process";
+import path from "path";
+import fs from "fs";
 
 const app = express();
+const PORT = process.env.PORT || 3000;
+
 app.use(cors());
+app.use(express.json());
 
-app.get("/download", async (req, res) => {
-    try {
-        const videoURL = req.query.url;
+app.get("/download", (req, res) => {
+    const videoURL = req.query.url;
+    const quality = req.query.quality || "360p";
 
-        if (!videoURL) {
-            return res.status(400).send("❌ YouTube URL is required");
+    if (!videoURL) return res.status(400).send("No video URL provided");
+
+    const output = path.join("downloads", `video.mp4`);
+    if (!fs.existsSync("downloads")) fs.mkdirSync("downloads");
+
+    // Map quality label to yt-dlp format codes
+    const qualityMap = {
+        "144p": "best[height<=144]",
+        "240p": "best[height<=240]",
+        "360p": "best[height<=360]",
+        "480p": "best[height<=480]",
+        "720p": "best[height<=720]",
+        "1080p": "best[height<=1080]"
+    };
+    const format = qualityMap[quality] || qualityMap["360p"];
+
+    exec(`yt-dlp -f "${format}" -o "${output}" "${videoURL}"`, (error) => {
+        if (error) {
+            console.error(error);
+            return res.status(500).send("Download failed");
         }
-
-        // Validate URL
-        if (!ytdl.validateURL(videoURL)) {
-            return res.status(400).send("❌ Invalid YouTube URL");
-        }
-
-        console.log(`📥 Download request: ${videoURL}`);
-
-        const info = await ytdl.getInfo(videoURL);
-        const title = info.videoDetails.title.replace(/[^\w\s]/gi, '');
-
-        // Set headers for download
-        res.header("Content-Disposition", `attachment; filename="${title}.mp4"`);
-
-        // Stream best MP4 format
-        ytdl(videoURL, { quality: "highest", filter: format => format.container === "mp4" })
-            .on("error", err => {
-                console.error("🚨 ytdl-core error:", err);
-                res.status(500).send("Error during download: " + err.message);
-            })
-            .pipe(res);
-
-    } catch (error) {
-        console.error("🚨 Server error:", error);
-        res.status(500).send("Error downloading video: " + error.message);
-    }
+        res.download(output, "video.mp4", () => {
+            fs.unlinkSync(output);
+        });
+    });
 });
 
-app.listen(3000, () => {
-    console.log("✅ Server running at http://localhost:3000");
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 });
